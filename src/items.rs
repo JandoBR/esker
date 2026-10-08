@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use axum::{
@@ -15,6 +16,14 @@ use uuid::Uuid;
 use crate::{error::AppError, state::SharedState, user::require_user, util};
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct FileMeta {
+    pub id: String,
+    pub file_name: String,
+    pub content_type: Option<String>,
+    pub size: Option<i64>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct Item {
     pub id: String,
     pub kind: String,
@@ -22,31 +31,75 @@ pub struct Item {
     pub description: Option<String>,
     pub body: Option<String>,
     pub url: Option<String>,
-    pub file_name: Option<String>,
-    pub content_type: Option<String>,
-    pub size: Option<i64>,
     pub created_by: Option<String>,
     pub created_at: String,
     /// When the item disappears; NULL means never.
     pub expires_at: Option<String>,
     /// Display name of the uploader, from the users table.
     pub author: Option<String>,
+    /// Attachments, for a file item. Filled in after the row is read.
+    #[sqlx(skip)]
+    pub files: Vec<FileMeta>,
 }
 
 const SELECT_ITEM: &str = "SELECT i.id, i.kind, i.title, i.description, i.body, i.url, \
-    i.file_name, i.content_type, i.size, i.created_by, i.created_at, i.expires_at, \
+    i.created_by, i.created_at, i.expires_at, \
     COALESCE(u.display_name, u.username, i.created_by) AS author \
     FROM items i LEFT JOIN users u ON u.sub = i.created_by";
 
+async fn load_files(state: &SharedState, item_id: &str) -> Result<Vec<FileMeta>, AppError> {
+    Ok(sqlx::query_as::<_, FileMeta>(
+        "SELECT id, file_name, content_type, size FROM files WHERE item_id = ? ORDER BY created_at",
+    )
+    .bind(item_id)
+    .fetch_all(&state.db)
+    .await?)
+}
+
 async fn fetch_item(state: &SharedState, id: &str) -> Result<Item, AppError> {
-    sqlx::query_as::<_, Item>(&format!(
+    let mut item = sqlx::query_as::<_, Item>(&format!(
         "{SELECT_ITEM} WHERE i.id = ? AND (i.expires_at IS NULL OR i.expires_at > ?)"
     ))
     .bind(id)
     .bind(util::now())
     .fetch_optional(&state.db)
     .await?
-    .ok_or(AppError::NotFound)
+    .ok_or(AppError::NotFound)?;
+    item.files = load_files(state, id).await?;
+    Ok(item)
+}
+
+#[derive(sqlx::FromRow)]
+struct FileRow {
+    item_id: String,
+    id: String,
+    file_name: String,
+    content_type: Option<String>,
+    size: Option<i64>,
+}
+
+/// One query for every attachment, grouped onto the items it belongs to.
+async fn attach_files(state: &SharedState, items: &mut [Item]) -> Result<(), AppError> {
+    let rows = sqlx::query_as::<_, FileRow>(
+        "SELECT item_id, id, file_name, content_type, size FROM files ORDER BY created_at",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let mut grouped: HashMap<String, Vec<FileMeta>> = HashMap::new();
+    for row in rows {
+        grouped.entry(row.item_id).or_default().push(FileMeta {
+            id: row.id,
+            file_name: row.file_name,
+            content_type: row.content_type,
+            size: row.size,
+        });
+    }
+    for item in items.iter_mut() {
+        if let Some(files) = grouped.remove(&item.id) {
+            item.files = files;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -60,7 +113,7 @@ pub async fn list_items(
     Query(params): Query<ListParams>,
 ) -> Result<Json<Vec<Item>>, AppError> {
     require_user(&state, &headers).await?;
-    let items = match params.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+    let mut items = match params.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
         Some(q) => {
             let like = format!("%{q}%");
             sqlx::query_as::<_, Item>(&format!(
@@ -85,6 +138,7 @@ pub async fn list_items(
             .await?
         }
     };
+    attach_files(&state, &mut items).await?;
     Ok(Json(items))
 }
 
@@ -95,6 +149,67 @@ pub async fn get_item(
 ) -> Result<Json<Item>, AppError> {
     require_user(&state, &headers).await?;
     Ok(Json(fetch_item(&state, &id).await?))
+}
+
+/// An uploaded file, streamed to disk before its row exists.
+struct Uploaded {
+    id: String,
+    file_name: String,
+    content_type: Option<String>,
+    size: i64,
+    path: PathBuf,
+}
+
+/// Stream one multipart file field to disk, returning its metadata.
+async fn receive_file(
+    state: &SharedState,
+    files_dir: &std::path::Path,
+    field: axum::extract::multipart::Field<'_>,
+) -> Result<Uploaded, AppError> {
+    let file_name = field.file_name().unwrap_or("file").to_string();
+    let content_type = field.content_type().map(str::to_string);
+    let id = Uuid::new_v4().to_string();
+    let path = files_dir.join(&id);
+    let mut file = tokio::fs::File::create(&path).await?;
+    let mut field = field;
+    let mut size: u64 = 0;
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("bad upload: {e}")))?
+    {
+        size += chunk.len() as u64;
+        if state.cfg.max_upload_bytes > 0 && size > state.cfg.max_upload_bytes as u64 {
+            drop(file);
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(AppError::BadRequest("file is too large".to_string()));
+        }
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    Ok(Uploaded {
+        id,
+        file_name,
+        content_type,
+        size: size as i64,
+        path,
+    })
+}
+
+async fn insert_file(state: &SharedState, item_id: &str, file: &Uploaded) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO files (id, item_id, file_name, content_type, size, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&file.id)
+    .bind(item_id)
+    .bind(&file.file_name)
+    .bind(&file.content_type)
+    .bind(file.size)
+    .bind(util::now())
+    .execute(&state.db)
+    .await?;
+    Ok(())
 }
 
 pub async fn create_item(
@@ -111,8 +226,7 @@ pub async fn create_item(
     let mut body: Option<String> = None;
     let mut url: Option<String> = None;
     let mut ttl_seconds: Option<i64> = None;
-    // (original name, content type, size, path on disk)
-    let mut uploaded: Option<(String, String, u64, PathBuf)> = None;
+    let mut uploads: Vec<Uploaded> = Vec::new();
 
     let files_dir = state.cfg.data_dir.join("files");
     tokio::fs::create_dir_all(&files_dir).await?;
@@ -124,30 +238,7 @@ pub async fn create_item(
     {
         let name = field.name().unwrap_or_default().to_string();
         if name == "file" {
-            let file_name = field.file_name().unwrap_or("file").to_string();
-            let content_type = field
-                .content_type()
-                .map(str::to_string)
-                .unwrap_or_else(|| "application/octet-stream".to_string());
-            let path = files_dir.join(&id);
-            let mut file = tokio::fs::File::create(&path).await?;
-            let mut field = field;
-            let mut size: u64 = 0;
-            while let Some(chunk) = field
-                .chunk()
-                .await
-                .map_err(|e| AppError::BadRequest(format!("bad upload: {e}")))?
-            {
-                size += chunk.len() as u64;
-                if state.cfg.max_upload_bytes > 0 && size > state.cfg.max_upload_bytes as u64 {
-                    drop(file);
-                    let _ = tokio::fs::remove_file(&path).await;
-                    return Err(AppError::BadRequest("file is too large".to_string()));
-                }
-                file.write_all(&chunk).await?;
-            }
-            file.flush().await?;
-            uploaded = Some((file_name, content_type, size, path));
+            uploads.push(receive_file(&state, &files_dir, field).await?);
         } else {
             let value = field
                 .text()
@@ -171,40 +262,30 @@ pub async fn create_item(
         .filter(|t| !t.is_empty())
         .ok_or_else(|| AppError::BadRequest("title is required".to_string()))?;
 
-    // A file sent for a non-file item is discarded.
+    // Files sent for a non-file item are discarded.
     if kind != "file" {
-        if let Some((_, _, _, path)) = uploaded.take() {
-            let _ = tokio::fs::remove_file(path).await;
+        for upload in uploads.drain(..) {
+            let _ = tokio::fs::remove_file(upload.path).await;
         }
     }
 
-    let (body, url, file_name, file_path, content_type, size) = match kind.as_str() {
+    let (body, url) = match kind.as_str() {
         "text" => {
             let body = body.ok_or_else(|| AppError::BadRequest("body is required".to_string()))?;
-            (Some(body), None, None, None, None, None)
+            (Some(body), None)
         }
         "link" => {
             let url = url.ok_or_else(|| AppError::BadRequest("url is required".to_string()))?;
-            let parsed = url::Url::parse(&url)
-                .map_err(|_| AppError::BadRequest("url is not valid".to_string()))?;
-            if !matches!(parsed.scheme(), "http" | "https") {
-                return Err(AppError::BadRequest(
-                    "url must start with http:// or https://".to_string(),
-                ));
-            }
-            (None, Some(url), None, None, None, None)
+            validate_url(&url)?;
+            (None, Some(url))
         }
         "file" => {
-            let (name, content_type, size, _) =
-                uploaded.ok_or_else(|| AppError::BadRequest("file is required".to_string()))?;
-            (
-                None,
-                None,
-                Some(name),
-                Some(id.clone()),
-                Some(content_type),
-                Some(size as i64),
-            )
+            if uploads.is_empty() {
+                return Err(AppError::BadRequest(
+                    "at least one file is required".to_string(),
+                ));
+            }
+            (None, None)
         }
         other => return Err(AppError::BadRequest(format!("unknown kind: {other}"))),
     };
@@ -215,8 +296,8 @@ pub async fn create_item(
 
     sqlx::query(
         "INSERT INTO items
-           (id, kind, title, description, body, url, file_name, file_path, content_type, size, created_by, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+           (id, kind, title, description, body, url, created_by, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&kind)
@@ -224,15 +305,15 @@ pub async fn create_item(
     .bind(&description)
     .bind(&body)
     .bind(&url)
-    .bind(&file_name)
-    .bind(&file_path)
-    .bind(&content_type)
-    .bind(size)
     .bind(&user.sub)
     .bind(util::now())
     .bind(&expires_at)
     .execute(&state.db)
     .await?;
+
+    for upload in &uploads {
+        insert_file(&state, &id, upload).await?;
+    }
 
     Ok(Json(fetch_item(&state, &id).await?))
 }
@@ -286,13 +367,7 @@ pub async fn update_item(
             .await?;
     }
     if let Some(url) = patch.url {
-        let parsed = url::Url::parse(&url)
-            .map_err(|_| AppError::BadRequest("url is not valid".to_string()))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err(AppError::BadRequest(
-                "url must start with http:// or https://".to_string(),
-            ));
-        }
+        validate_url(&url)?;
         sqlx::query("UPDATE items SET url = ? WHERE id = ?")
             .bind(url)
             .bind(&id)
@@ -324,17 +399,72 @@ pub async fn delete_item(
     let item = fetch_item(&state, &id).await?;
     ensure_can_modify(&user, &item)?;
 
+    for file in &item.files {
+        let _ = tokio::fs::remove_file(state.cfg.data_dir.join("files").join(&file.id)).await;
+    }
     sqlx::query("DELETE FROM items WHERE id = ?")
         .bind(&id)
         .execute(&state.db)
         .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
 
-    if item.kind == "file" {
-        if let Some(file_path) = item_id_path(&state, &item) {
-            let _ = tokio::fs::remove_file(file_path).await;
+/// Add one or more attachments to an existing file item.
+pub async fn add_item_files(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    mut multipart: Multipart,
+) -> Result<Json<Item>, AppError> {
+    let user = require_user(&state, &headers).await?;
+    let item = fetch_item(&state, &id).await?;
+    ensure_can_modify(&user, &item)?;
+    if item.kind != "file" {
+        return Err(AppError::BadRequest(
+            "only file items can have attachments".to_string(),
+        ));
+    }
+
+    let files_dir = state.cfg.data_dir.join("files");
+    tokio::fs::create_dir_all(&files_dir).await?;
+
+    let mut added = 0;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("bad upload: {e}")))?
+    {
+        if field.name() == Some("file") {
+            let upload = receive_file(&state, &files_dir, field).await?;
+            insert_file(&state, &id, &upload).await?;
+            added += 1;
         }
     }
-    Ok(StatusCode::NO_CONTENT)
+    if added == 0 {
+        return Err(AppError::BadRequest("no files provided".to_string()));
+    }
+    Ok(Json(fetch_item(&state, &id).await?))
+}
+
+pub async fn delete_item_file(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path((id, file_id)): Path<(String, String)>,
+) -> Result<Json<Item>, AppError> {
+    let user = require_user(&state, &headers).await?;
+    let item = fetch_item(&state, &id).await?;
+    ensure_can_modify(&user, &item)?;
+
+    let result = sqlx::query("DELETE FROM files WHERE id = ? AND item_id = ?")
+        .bind(&file_id)
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    let _ = tokio::fs::remove_file(state.cfg.data_dir.join("files").join(&file_id)).await;
+    Ok(Json(fetch_item(&state, &id).await?))
 }
 
 #[derive(Deserialize)]
@@ -345,57 +475,65 @@ pub struct FileParams {
 pub async fn get_item_file(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    Path((id, file_id)): Path<(String, String)>,
+    Query(params): Query<FileParams>,
+) -> Result<Response, AppError> {
+    require_user(&state, &headers).await?;
+    serve_by_file_id(&state, &id, &file_id, params.inline.unwrap_or(false)).await
+}
+
+/// The old single-file URL, kept working: serves the item's first attachment.
+pub async fn get_item_file_legacy(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Query(params): Query<FileParams>,
 ) -> Result<Response, AppError> {
     require_user(&state, &headers).await?;
-
-    let row = sqlx::query_as::<
-        _,
-        (
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-        ),
-    >(
-        "SELECT kind, file_name, file_path, content_type, size FROM items \
-         WHERE id = ? AND (expires_at IS NULL OR expires_at > ?)",
+    let file_id: Option<String> = sqlx::query_scalar(
+        "SELECT f.id FROM files f JOIN items i ON i.id = f.item_id \
+         WHERE f.item_id = ? AND (i.expires_at IS NULL OR i.expires_at > ?) \
+         ORDER BY f.created_at LIMIT 1",
     )
     .bind(&id)
     .bind(util::now())
     .fetch_optional(&state.db)
+    .await?;
+    let file_id = file_id.ok_or(AppError::NotFound)?;
+    serve_by_file_id(&state, &id, &file_id, params.inline.unwrap_or(false)).await
+}
+
+async fn serve_by_file_id(
+    state: &SharedState,
+    item_id: &str,
+    file_id: &str,
+    inline: bool,
+) -> Result<Response, AppError> {
+    let row = sqlx::query_as::<_, (String, Option<String>, Option<i64>)>(
+        "SELECT f.file_name, f.content_type, f.size FROM files f \
+         JOIN items i ON i.id = f.item_id \
+         WHERE f.id = ? AND f.item_id = ? AND (i.expires_at IS NULL OR i.expires_at > ?)",
+    )
+    .bind(file_id)
+    .bind(item_id)
+    .bind(util::now())
+    .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;
-    let (kind, file_name, file_path, content_type, size) = row;
+    let (file_name, content_type, size) = row;
 
-    if kind != "file" {
-        return Err(AppError::BadRequest("item has no file".to_string()));
-    }
-    let file_name = file_name.unwrap_or_else(|| "download".to_string());
-    let path = state
-        .cfg
-        .data_dir
-        .join("files")
-        .join(file_path.ok_or(AppError::NotFound)?);
-
+    let path = state.cfg.data_dir.join("files").join(file_id);
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|_| AppError::NotFound)?;
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
+    let body = Body::from_stream(ReaderStream::new(file));
 
     let content_type = content_type.unwrap_or_else(|| {
         mime_guess::from_path(&file_name)
             .first_or_octet_stream()
             .to_string()
     });
-    let disposition = if params.inline.unwrap_or(false) {
-        "inline"
-    } else {
-        "attachment"
-    };
+    let disposition = if inline { "inline" } else { "attachment" };
 
     let mut response = Response::new(body);
     let headers = response.headers_mut();
@@ -415,6 +553,18 @@ pub async fn get_item_file(
     Ok(response.into_response())
 }
 
+fn validate_url(url: &str) -> Result<(), AppError> {
+    let parsed =
+        url::Url::parse(url).map_err(|_| AppError::BadRequest("url is not valid".to_string()))?;
+    if matches!(parsed.scheme(), "http" | "https") {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest(
+            "url must start with http:// or https://".to_string(),
+        ))
+    }
+}
+
 fn ensure_can_modify(user: &crate::user::User, item: &Item) -> Result<(), AppError> {
     if user.is_admin || item.created_by.as_deref() == Some(user.sub.as_str()) {
         Ok(())
@@ -423,32 +573,28 @@ fn ensure_can_modify(user: &crate::user::User, item: &Item) -> Result<(), AppErr
     }
 }
 
-fn item_id_path(state: &SharedState, item: &Item) -> Option<std::path::PathBuf> {
-    // Only files have a stored path; the row's file_path mirrors the id.
-    (item.kind == "file").then(|| state.cfg.data_dir.join("files").join(&item.id))
-}
-
 /// Delete items past their expiry, along with their files. Reads already hide
 /// expired items; this reclaims the rows and the disk.
 pub async fn cleanup_expired(state: &SharedState) -> Result<(), AppError> {
-    let rows = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT id, file_path FROM items WHERE expires_at IS NOT NULL AND expires_at <= ?",
+    let now = util::now();
+    let expired = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM items WHERE expires_at IS NOT NULL AND expires_at <= ?",
     )
-    .bind(util::now())
+    .bind(&now)
     .fetch_all(&state.db)
     .await?;
 
-    for (id, file_path) in &rows {
-        if let Some(file_path) = file_path {
-            let _ = tokio::fs::remove_file(state.cfg.data_dir.join("files").join(file_path)).await;
+    for item_id in &expired {
+        for file in load_files(state, item_id).await? {
+            let _ = tokio::fs::remove_file(state.cfg.data_dir.join("files").join(&file.id)).await;
         }
         sqlx::query("DELETE FROM items WHERE id = ?")
-            .bind(id)
+            .bind(item_id)
             .execute(&state.db)
             .await?;
     }
-    if !rows.is_empty() {
-        tracing::info!("removed {} expired item(s)", rows.len());
+    if !expired.is_empty() {
+        tracing::info!("removed {} expired item(s)", expired.len());
     }
     Ok(())
 }

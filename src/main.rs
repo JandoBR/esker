@@ -84,7 +84,12 @@ async fn main() -> anyhow::Result<()> {
                 .patch(items::update_item)
                 .delete(items::delete_item),
         )
-        .route("/items/{id}/file", get(items::get_item_file))
+        .route("/items/{id}/file", get(items::get_item_file_legacy))
+        .route("/items/{id}/files", post(items::add_item_files))
+        .route(
+            "/items/{id}/files/{file_id}",
+            get(items::get_item_file).delete(items::delete_item_file),
+        )
         .with_state(state.clone());
 
     // The default 2 MB body limit would block uploads; enforce our own instead.
