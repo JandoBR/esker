@@ -47,8 +47,20 @@ export const api = {
   remove: (id: string) =>
     request<void>(`/api/items/${id}`, { method: "DELETE" }),
 
-  fileUrl: (id: string, inline = false) =>
-    `/api/items/${id}/file${inline ? "?inline=true" : ""}`,
+  addFiles: (id: string, files: File[]) => {
+    const form = new FormData();
+    for (const file of files) form.append("file", file);
+    return request<Item>(`/api/items/${id}/files`, {
+      method: "POST",
+      body: form,
+    });
+  },
+
+  removeFile: (id: string, fileId: string) =>
+    request<Item>(`/api/items/${id}/files/${fileId}`, { method: "DELETE" }),
+
+  fileUrl: (id: string, fileId: string, inline = false) =>
+    `/api/items/${id}/files/${fileId}${inline ? "?inline=true" : ""}`,
 
   login: () => {
     window.location.href = "/api/auth/login";

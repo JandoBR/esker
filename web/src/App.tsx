@@ -36,7 +36,7 @@ const filters: { key: Filter; label: string; icon: typeof Inbox }[] = [
 /** Work out what a drag-and-drop carried: a file, a URL or plain text. */
 function payloadFromDataTransfer(dt: DataTransfer): DropPayload | null {
   if (dt.files && dt.files.length > 0) {
-    return { file: dt.files[0] };
+    return { files: Array.from(dt.files) };
   }
   const uriList = dt.getData("text/uri-list");
   if (uriList) {

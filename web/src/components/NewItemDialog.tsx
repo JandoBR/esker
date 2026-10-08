@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Clock, FileText, FileUp, Link2, Loader2 } from "lucide-react";
+import { Clock, FileText, FileUp, Link2, Loader2, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { DropPayload, Item, Kind } from "../types";
 import { cn, formatBytes } from "../lib/utils";
@@ -33,6 +33,11 @@ function firstLine(text: string): string {
   return line.trim().slice(0, 80);
 }
 
+function titleForFiles(files: File[]): string {
+  if (files.length === 1) return files[0].name;
+  return `${files.length} files`;
+}
+
 export function NewItemDialog({
   open,
   initial,
@@ -49,7 +54,7 @@ export function NewItemDialog({
   const [description, setDescription] = useState("");
   const [body, setBody] = useState("");
   const [url, setUrl] = useState("");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [ttl, setTtl] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,10 +65,10 @@ export function NewItemDialog({
     if (!open) return;
     setError(null);
     setTtl(0);
-    if (initial?.file) {
+    if (initial?.files && initial.files.length > 0) {
       setKind("file");
-      setFile(initial.file);
-      setTitle(initial.file.name);
+      setFiles(initial.files);
+      setTitle(titleForFiles(initial.files));
       setDescription("");
       setBody("");
       setUrl("");
@@ -71,14 +76,14 @@ export function NewItemDialog({
       setKind("link");
       setUrl(initial.url);
       setTitle(hostOf(initial.url));
-      setFile(null);
+      setFiles([]);
       setDescription("");
       setBody("");
     } else if (initial?.text) {
       setKind("text");
       setBody(initial.text);
       setTitle(firstLine(initial.text));
-      setFile(null);
+      setFiles([]);
       setDescription("");
       setUrl("");
     }
@@ -90,7 +95,7 @@ export function NewItemDialog({
     setDescription("");
     setBody("");
     setUrl("");
-    setFile(null);
+    setFiles([]);
     setTtl(0);
     setError(null);
   }
@@ -99,6 +104,19 @@ export function NewItemDialog({
     if (busy) return;
     reset();
     onClose();
+  }
+
+  function addFiles(list: FileList | null) {
+    if (!list || list.length === 0) return;
+    const next = [...files, ...Array.from(list)];
+    setFiles(next);
+    if (!title.trim() || title === titleForFiles(files)) {
+      setTitle(titleForFiles(next));
+    }
+  }
+
+  function removeFile(index: number) {
+    setFiles((current) => current.filter((_, i) => i !== index));
   }
 
   async function submit(event: FormEvent) {
@@ -112,8 +130,8 @@ export function NewItemDialog({
       setError("A URL is required.");
       return;
     }
-    if (kind === "file" && !file) {
-      setError("Choose a file to upload.");
+    if (kind === "file" && files.length === 0) {
+      setError("Choose at least one file.");
       return;
     }
 
@@ -124,7 +142,7 @@ export function NewItemDialog({
     form.append("ttl_seconds", String(ttl));
     if (kind === "text") form.append("body", body);
     if (kind === "link") form.append("url", url.trim());
-    if (kind === "file" && file) form.append("file", file);
+    if (kind === "file") for (const file of files) form.append("file", file);
 
     setBusy(true);
     try {
@@ -240,32 +258,56 @@ export function NewItemDialog({
           {kind === "file" && (
             <div>
               <label className="mb-1.5 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                File
+                Files
               </label>
+              {files.length > 0 && (
+                <ul className="mb-2 space-y-1.5">
+                  {files.map((file, index) => (
+                    <li
+                      key={`${file.name}-${index}`}
+                      className="flex items-center gap-2 rounded-lg bg-zinc-50 px-3 py-2 text-sm ring-1 ring-zinc-200 dark:bg-zinc-800/60 dark:ring-zinc-700"
+                    >
+                      <FileUp className="h-4 w-4 shrink-0 text-zinc-400" />
+                      <span className="min-w-0 flex-1 truncate text-zinc-700 dark:text-zinc-200">
+                        {file.name}
+                      </span>
+                      <span className="shrink-0 text-xs text-zinc-400">
+                        {formatBytes(file.size)}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => removeFile(index)}
+                        aria-label="Remove file"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <button
                 type="button"
                 onClick={() => fileInput.current?.click()}
-                className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 px-4 py-8 text-center transition-colors hover:border-indigo-400 hover:bg-indigo-50/40 dark:border-zinc-700 dark:hover:border-indigo-500 dark:hover:bg-indigo-500/5"
+                className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-300 px-4 py-6 text-center transition-colors hover:border-indigo-400 hover:bg-indigo-50/40 dark:border-zinc-700 dark:hover:border-indigo-500 dark:hover:bg-indigo-500/5"
               >
                 <FileUp className="h-6 w-6 text-zinc-400" />
-                {file ? (
-                  <span className="text-sm text-zinc-700 dark:text-zinc-300">
-                    {file.name}{" "}
-                    <span className="text-zinc-400">
-                      ({formatBytes(file.size)})
-                    </span>
-                  </span>
-                ) : (
-                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                    Click to choose a file
-                  </span>
-                )}
+                <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                  {files.length > 0
+                    ? "Add more files"
+                    : "Click to choose files (you can pick several)"}
+                </span>
               </button>
               <input
                 ref={fileInput}
                 type="file"
+                multiple
                 className="hidden"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                onChange={(e) => {
+                  addFiles(e.target.files);
+                  e.target.value = "";
+                }}
               />
             </div>
           )}
@@ -283,7 +325,9 @@ export function NewItemDialog({
           </Button>
           <Button type="submit" disabled={busy}>
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-            {kind === "file" ? "Upload" : "Add"}
+            {kind === "file"
+              ? `Upload${files.length > 1 ? ` ${files.length} files` : ""}`
+              : "Add"}
           </Button>
         </div>
       </form>
