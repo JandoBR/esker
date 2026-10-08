@@ -31,10 +31,10 @@ RUN touch src/main.rs && cargo build --release --locked
 
 # --- Runtime: glibc and CA certificates, no shell --------------------------
 FROM gcr.io/distroless/cc-debian12
-COPY --from=backend /src/target/release/file-share-board /app/file-share-board
+COPY --from=backend /src/target/release/enderboard /app/enderboard
 COPY --from=frontend /app/web/dist /app/static
 ENV BOARD_STATIC_DIR=/app/static \
     BOARD_DATA_DIR=/data
 VOLUME /data
 EXPOSE 8080
-ENTRYPOINT ["/app/file-share-board"]
+ENTRYPOINT ["/app/enderboard"]

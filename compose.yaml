@@ -1,11 +1,11 @@
-# Local or server stack. The server's real stack lives in nixos-config; this
-# is the same shape, with secrets supplied by an env file.
+# Local or server stack. This mirrors the stack in nixos-config; on the server
+# the image is built and pushed by the .forgejo workflow.
 services:
-  board:
-    image: ghcr.io/jandobr/file-share-board:latest
-    container_name: board
-    # Match the owner of the data directory: mkdir -p /srv/appdata/board &&
-    # chown 99:100 /srv/appdata/board
+  enderboard:
+    image: ghcr.io/jandobr/enderboard:latest
+    container_name: enderboard
+    # Match the owner of the data directory: mkdir -p /srv/appdata/enderboard &&
+    # chown 99:100 /srv/appdata/enderboard
     user: "99:100"
     restart: unless-stopped
     env_file:
@@ -15,12 +15,12 @@ services:
       - BOARD_PUBLIC_URL=https://board.example.com
       - OIDC_ISSUER=https://id.example.com
       - OIDC_GROUP_CLAIM=groups
-      - OIDC_ADMIN_GROUP=board-admin
+      - OIDC_ADMIN_GROUP=admin
     ports:
-      # A host port nothing else uses; the proxy reaches it here.
-      - "8102:8080"
+      # The proxy reaches it here; board.example.com points at this port.
+      - "8091:8080"
     volumes:
-      - /srv/appdata/board:/data
+      - /srv/appdata/enderboard:/data
     networks:
       - internal
 

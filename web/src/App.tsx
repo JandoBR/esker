@@ -98,10 +98,10 @@ export function App() {
       <div className="flex h-full items-center justify-center bg-gradient-to-br from-zinc-50 to-zinc-100 px-4 dark:from-zinc-950 dark:to-zinc-900">
         <div className="w-full max-w-sm text-center">
           <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 text-xl font-bold text-white shadow-lg">
-            B
+            E
           </div>
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-            Board
+            Enderboard
           </h1>
           <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
             Text, links and files, in one place.

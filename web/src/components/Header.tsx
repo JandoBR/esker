@@ -10,10 +10,10 @@ export function Header({ user, onNew }: { user: User; onNew: () => void }) {
       <div className="mx-auto flex h-16 max-w-5xl items-center gap-4 px-4">
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-sm font-bold text-white">
-            B
+            E
           </div>
           <span className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-            Board
+            Enderboard
           </span>
         </div>
 

@@ -1,4 +1,4 @@
-# file-share-board
+# Enderboard
 
 A small web board of text, links and files, with Pocket ID sign-in and admins
 granted by an OIDC group. Rust/axum server, React SPA, SQLite, files on disk.
@@ -76,7 +76,7 @@ little C; the runtime image is distroless and has none of it.
 ## Deploy
 
 ```sh
-IMAGE=ghcr.io/jandobr/file-share-board scripts/publish-image   # or the CI workflow
+IMAGE=ghcr.io/jandobr/enderboard scripts/publish-image   # or the CI workflow
 ```
 
 Then copy `compose.yaml` to the server stack, create and chown the data
