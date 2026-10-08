@@ -20,7 +20,15 @@ export interface Item {
   size: number | null;
   created_by: string | null;
   created_at: string;
+  expires_at: string | null;
   author: string | null;
+}
+
+/** What a drag-and-drop (or paste) handed us, before the dialog opens. */
+export interface DropPayload {
+  file?: File;
+  url?: string;
+  text?: string;
 }
 
 export interface ItemPatch {

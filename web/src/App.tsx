@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+} from "react";
 import {
   FileArchive,
   FileText,
@@ -7,9 +13,10 @@ import {
   Loader2,
   Plus,
   Search,
+  Upload,
 } from "lucide-react";
-import { api, ApiError } from "./api";
-import type { Item, Kind, User } from "./types";
+import { api } from "./api";
+import type { DropPayload, Item, Kind, User } from "./types";
 import { cn } from "./lib/utils";
 import { Header } from "./components/Header";
 import { ItemCard } from "./components/ItemCard";
@@ -26,6 +33,21 @@ const filters: { key: Filter; label: string; icon: typeof Inbox }[] = [
   { key: "file", label: "Files", icon: FileArchive },
 ];
 
+/** Work out what a drag-and-drop carried: a file, a URL or plain text. */
+function payloadFromDataTransfer(dt: DataTransfer): DropPayload | null {
+  if (dt.files && dt.files.length > 0) {
+    return { file: dt.files[0] };
+  }
+  const uriList = dt.getData("text/uri-list");
+  if (uriList) {
+    const line = uriList.split(/\r?\n/).find((l) => l && !l.startsWith("#"));
+    if (line) return { url: line };
+  }
+  const text = dt.getData("text/plain");
+  if (text && text.trim()) return { text };
+  return null;
+}
+
 export function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [items, setItems] = useState<Item[]>([]);
@@ -34,15 +56,26 @@ export function App() {
   const [filter, setFilter] = useState<Filter>("all");
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<Item | null>(null);
+  const [drop, setDrop] = useState<DropPayload | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
 
   useEffect(() => {
     api
       .me()
       .then(setUser)
-      .catch((e) => {
-        if (e instanceof ApiError && e.status === 401) setUser(null);
-        else setUser(null);
-      });
+      .catch(() => setUser(null));
+  }, []);
+
+  // Stop the browser from navigating away when a drop misses a target.
+  useEffect(() => {
+    const prevent = (event: DragEvent) => event.preventDefault();
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
   }, []);
 
   useEffect(() => {
@@ -85,6 +118,37 @@ export function App() {
     setSelected((current) => (current?.id === item.id ? null : current));
   }
 
+  function openNew() {
+    setDrop(null);
+    setCreating(true);
+  }
+
+  function onDragEnter(event: ReactDragEvent) {
+    event.preventDefault();
+    dragDepth.current += 1;
+    if (event.dataTransfer.types.length > 0) setDragging(true);
+  }
+
+  function onDragLeave() {
+    dragDepth.current -= 1;
+    if (dragDepth.current <= 0) {
+      dragDepth.current = 0;
+      setDragging(false);
+    }
+  }
+
+  function onDrop(event: ReactDragEvent) {
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    if (creating) return;
+    const payload = payloadFromDataTransfer(event.dataTransfer);
+    if (payload) {
+      setDrop(payload);
+      setCreating(true);
+    }
+  }
+
   if (user === undefined) {
     return (
       <div className="flex h-full items-center justify-center bg-zinc-50 dark:bg-zinc-950">
@@ -115,8 +179,14 @@ export function App() {
   }
 
   return (
-    <div className="min-h-full bg-zinc-50 dark:bg-zinc-950">
-      <Header user={user} onNew={() => setCreating(true)} />
+    <div
+      className="min-h-full bg-zinc-50 dark:bg-zinc-950"
+      onDragEnter={onDragEnter}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      <Header user={user} onNew={openNew} />
 
       <main className="mx-auto max-w-5xl px-4 py-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -162,7 +232,10 @@ export function App() {
             <p className="mt-3 text-sm font-medium text-zinc-600 dark:text-zinc-300">
               {query ? "Nothing matches that search" : "The board is empty"}
             </p>
-            <Button className="mt-4" size="sm" onClick={() => setCreating(true)}>
+            <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
+              Drop a file, link or text anywhere to add it
+            </p>
+            <Button className="mt-4" size="sm" onClick={openNew}>
               <Plus className="h-4 w-4" />
               Add something
             </Button>
@@ -182,9 +255,27 @@ export function App() {
         )}
       </main>
 
+      {dragging && !creating && (
+        <div className="pointer-events-none fixed inset-0 z-[60] flex items-center justify-center bg-indigo-600/10 p-6 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-indigo-400 bg-white/90 px-12 py-9 text-center shadow-xl dark:bg-zinc-900/90">
+            <Upload className="h-8 w-8 text-indigo-500" />
+            <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+              Drop to add to the board
+            </p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              File, link or text
+            </p>
+          </div>
+        </div>
+      )}
+
       <NewItemDialog
         open={creating}
-        onClose={() => setCreating(false)}
+        initial={drop}
+        onClose={() => {
+          setCreating(false);
+          setDrop(null);
+        }}
         onCreated={(item) => setItems((current) => [item, ...current])}
       />
 

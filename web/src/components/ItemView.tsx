@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   Check,
+  Clock,
   Copy,
   Download,
   ExternalLink,
@@ -10,7 +11,7 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import type { Item } from "../types";
-import { formatBytes, formatDate } from "../lib/utils";
+import { formatBytes, formatDate, formatExpiry } from "../lib/utils";
 import { Button, Input, Modal, ModalHeader, Textarea } from "./ui";
 
 export function ItemView({
@@ -163,6 +164,15 @@ export function ItemView({
               <span>{item.author ? `by ${item.author}` : ""}</span>
               <span>·</span>
               <span>{formatDate(item.created_at)}</span>
+              {formatExpiry(item.expires_at) && (
+                <>
+                  <span>·</span>
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    {formatExpiry(item.expires_at)}
+                  </span>
+                </>
+              )}
             </div>
           </div>
         )}

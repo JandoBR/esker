@@ -28,3 +28,17 @@ export function formatDate(iso: string): string {
     minute: "2-digit",
   });
 }
+
+/** "expires in 3 d", or null when the item never expires. */
+export function formatExpiry(iso: string | null): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const diff = date.getTime() - Date.now();
+  if (diff <= 0) return "expired";
+  const minutes = Math.round(diff / 60000);
+  if (minutes < 60) return `expires in ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `expires in ${hours} h`;
+  return `expires in ${Math.round(hours / 24)} d`;
+}

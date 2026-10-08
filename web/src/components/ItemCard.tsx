@@ -1,4 +1,5 @@
 import {
+  Clock,
   Download,
   ExternalLink,
   FileArchive,
@@ -7,7 +8,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { Item } from "../types";
-import { formatBytes, formatDate } from "../lib/utils";
+import { formatBytes, formatDate, formatExpiry } from "../lib/utils";
 import { Badge, Button } from "./ui";
 
 const kindStyles: Record<
@@ -46,6 +47,7 @@ export function ItemCard({
 }) {
   const style = kindStyles[item.kind];
   const Icon = style.icon;
+  const expiry = formatExpiry(item.expires_at);
 
   return (
     <div className="group flex flex-col rounded-xl border border-zinc-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900">
@@ -77,6 +79,12 @@ export function ItemCard({
       <div className="mt-3 flex items-center gap-2 text-xs text-zinc-400 dark:text-zinc-500">
         <Badge className={style.className}>{style.label}</Badge>
         {item.size != null && <span>{formatBytes(item.size)}</span>}
+        {expiry && (
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            <Clock className="h-3 w-3" />
+            {expiry}
+          </span>
+        )}
         <span className="truncate">
           {item.author ? `by ${item.author}` : ""} · {formatDate(item.created_at)}
         </span>

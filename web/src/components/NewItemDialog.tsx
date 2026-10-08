@@ -1,7 +1,7 @@
-import { useRef, useState, type FormEvent } from "react";
-import { FileText, FileUp, Link2, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Clock, FileText, FileUp, Link2, Loader2 } from "lucide-react";
 import { api } from "../api";
-import type { Item, Kind } from "../types";
+import type { DropPayload, Item, Kind } from "../types";
 import { cn, formatBytes } from "../lib/utils";
 import { Button, Input, Modal, ModalHeader, Textarea } from "./ui";
 
@@ -11,12 +11,36 @@ const tabs: { kind: Kind; label: string; icon: typeof FileText }[] = [
   { kind: "file", label: "File", icon: FileUp },
 ];
 
+const ttlOptions = [
+  { label: "Never", seconds: 0 },
+  { label: "1 hour", seconds: 3600 },
+  { label: "6 hours", seconds: 21600 },
+  { label: "1 day", seconds: 86400 },
+  { label: "7 days", seconds: 604800 },
+  { label: "30 days", seconds: 2592000 },
+];
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+function firstLine(text: string): string {
+  const line = text.split(/\r?\n/).find((l) => l.trim()) ?? "";
+  return line.trim().slice(0, 80);
+}
+
 export function NewItemDialog({
   open,
+  initial,
   onClose,
   onCreated,
 }: {
   open: boolean;
+  initial?: DropPayload | null;
   onClose: () => void;
   onCreated: (item: Item) => void;
 }) {
@@ -26,9 +50,39 @@ export function NewItemDialog({
   const [body, setBody] = useState("");
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [ttl, setTtl] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // Prefill from a dropped file, URL or text each time the dialog opens.
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
+    setTtl(0);
+    if (initial?.file) {
+      setKind("file");
+      setFile(initial.file);
+      setTitle(initial.file.name);
+      setDescription("");
+      setBody("");
+      setUrl("");
+    } else if (initial?.url) {
+      setKind("link");
+      setUrl(initial.url);
+      setTitle(hostOf(initial.url));
+      setFile(null);
+      setDescription("");
+      setBody("");
+    } else if (initial?.text) {
+      setKind("text");
+      setBody(initial.text);
+      setTitle(firstLine(initial.text));
+      setFile(null);
+      setDescription("");
+      setUrl("");
+    }
+  }, [open, initial]);
 
   function reset() {
     setKind("text");
@@ -37,6 +91,7 @@ export function NewItemDialog({
     setBody("");
     setUrl("");
     setFile(null);
+    setTtl(0);
     setError(null);
   }
 
@@ -66,6 +121,7 @@ export function NewItemDialog({
     form.append("kind", kind);
     form.append("title", title.trim());
     form.append("description", description.trim());
+    form.append("ttl_seconds", String(ttl));
     if (kind === "text") form.append("body", body);
     if (kind === "link") form.append("url", url.trim());
     if (kind === "file" && file) form.append("file", file);
@@ -123,15 +179,34 @@ export function NewItemDialog({
             />
           </div>
 
-          <div>
-            <label className="mb-1.5 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Description <span className="text-zinc-400">(optional)</span>
-            </label>
-            <Input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="A short note shown on the card"
-            />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Description <span className="text-zinc-400">(optional)</span>
+              </label>
+              <Input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="A short note"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                <Clock className="h-3.5 w-3.5 text-zinc-400" />
+                Expires
+              </label>
+              <select
+                value={ttl}
+                onChange={(e) => setTtl(Number(e.target.value))}
+                className="h-10 w-full rounded-lg border-0 bg-white px-3 text-sm text-zinc-900 ring-1 ring-inset ring-zinc-300 focus:ring-2 focus:ring-inset focus:ring-indigo-500 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-zinc-700"
+              >
+                {ttlOptions.map((option) => (
+                  <option key={option.seconds} value={option.seconds}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {kind === "text" && (
