@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Builds the project's image and pushes it to the registry, as `latest` and
+# under the commit. What the image workflow does, from a development machine.
+#
+#   IMAGE=ghcr.io/jandobr/enderboard scripts/publish-image
+set -euo pipefail
+# Works on the project it is run in, wherever the script itself lives.
+cd "$(git rev-parse --show-toplevel)"
+
+image="${IMAGE:?registry/name, e.g. ghcr.io/jandobr/enderboard}"
+commit="$(git rev-parse --short HEAD)"
+
+docker build -t "$image:latest" -t "$image:$commit" .
+docker push "$image:latest"
+docker push "$image:$commit"
+echo "Pushed $image:latest and $image:$commit"
