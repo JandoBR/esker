@@ -27,21 +27,26 @@ pub struct Item {
     pub size: Option<i64>,
     pub created_by: Option<String>,
     pub created_at: String,
+    /// When the item disappears; NULL means never.
+    pub expires_at: Option<String>,
     /// Display name of the uploader, from the users table.
     pub author: Option<String>,
 }
 
 const SELECT_ITEM: &str = "SELECT i.id, i.kind, i.title, i.description, i.body, i.url, \
-    i.file_name, i.content_type, i.size, i.created_by, i.created_at, \
+    i.file_name, i.content_type, i.size, i.created_by, i.created_at, i.expires_at, \
     COALESCE(u.display_name, u.username, i.created_by) AS author \
     FROM items i LEFT JOIN users u ON u.sub = i.created_by";
 
 async fn fetch_item(state: &SharedState, id: &str) -> Result<Item, AppError> {
-    sqlx::query_as::<_, Item>(&format!("{SELECT_ITEM} WHERE i.id = ?"))
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(AppError::NotFound)
+    sqlx::query_as::<_, Item>(&format!(
+        "{SELECT_ITEM} WHERE i.id = ? AND (i.expires_at IS NULL OR i.expires_at > ?)"
+    ))
+    .bind(id)
+    .bind(util::now())
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)
 }
 
 #[derive(Deserialize)]
@@ -59,9 +64,11 @@ pub async fn list_items(
         Some(q) => {
             let like = format!("%{q}%");
             sqlx::query_as::<_, Item>(&format!(
-                "{SELECT_ITEM} WHERE (i.title LIKE ? OR i.description LIKE ? OR i.body LIKE ?) \
+                "{SELECT_ITEM} WHERE (i.expires_at IS NULL OR i.expires_at > ?) \
+                 AND (i.title LIKE ? OR i.description LIKE ? OR i.body LIKE ?) \
                  ORDER BY i.created_at DESC"
             ))
+            .bind(util::now())
             .bind(&like)
             .bind(&like)
             .bind(&like)
@@ -69,9 +76,13 @@ pub async fn list_items(
             .await?
         }
         None => {
-            sqlx::query_as::<_, Item>(&format!("{SELECT_ITEM} ORDER BY i.created_at DESC"))
-                .fetch_all(&state.db)
-                .await?
+            sqlx::query_as::<_, Item>(&format!(
+                "{SELECT_ITEM} WHERE (i.expires_at IS NULL OR i.expires_at > ?) \
+                 ORDER BY i.created_at DESC"
+            ))
+            .bind(util::now())
+            .fetch_all(&state.db)
+            .await?
         }
     };
     Ok(Json(items))
@@ -99,6 +110,7 @@ pub async fn create_item(
     let mut description: Option<String> = None;
     let mut body: Option<String> = None;
     let mut url: Option<String> = None;
+    let mut ttl_seconds: Option<i64> = None;
     // (original name, content type, size, path on disk)
     let mut uploaded: Option<(String, String, u64, PathBuf)> = None;
 
@@ -147,6 +159,7 @@ pub async fn create_item(
                 "description" => description = Some(value).filter(|v| !v.trim().is_empty()),
                 "body" => body = Some(value),
                 "url" => url = Some(value),
+                "ttl_seconds" => ttl_seconds = value.trim().parse().ok(),
                 _ => {}
             }
         }
@@ -196,10 +209,14 @@ pub async fn create_item(
         other => return Err(AppError::BadRequest(format!("unknown kind: {other}"))),
     };
 
+    let expires_at = ttl_seconds
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| (chrono::Utc::now() + chrono::Duration::seconds(seconds)).to_rfc3339());
+
     sqlx::query(
         "INSERT INTO items
-           (id, kind, title, description, body, url, file_name, file_path, content_type, size, created_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+           (id, kind, title, description, body, url, file_name, file_path, content_type, size, created_by, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&kind)
@@ -213,6 +230,7 @@ pub async fn create_item(
     .bind(size)
     .bind(&user.sub)
     .bind(util::now())
+    .bind(&expires_at)
     .execute(&state.db)
     .await?;
 
@@ -225,6 +243,9 @@ pub struct UpdateItem {
     description: Option<String>,
     body: Option<String>,
     url: Option<String>,
+    /// Seconds until it expires; 0 (or omitted) leaves it unchanged, a
+    /// negative value clears the expiry.
+    expires_in: Option<i64>,
 }
 
 pub async fn update_item(
@@ -278,6 +299,18 @@ pub async fn update_item(
             .execute(&state.db)
             .await?;
     }
+    if let Some(seconds) = patch.expires_in.filter(|s| *s != 0) {
+        let expires_at = if seconds > 0 {
+            Some((chrono::Utc::now() + chrono::Duration::seconds(seconds)).to_rfc3339())
+        } else {
+            None
+        };
+        sqlx::query("UPDATE items SET expires_at = ? WHERE id = ?")
+            .bind(expires_at)
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+    }
 
     Ok(Json(fetch_item(&state, &id).await?))
 }
@@ -326,8 +359,12 @@ pub async fn get_item_file(
             Option<String>,
             Option<i64>,
         ),
-    >("SELECT kind, file_name, file_path, content_type, size FROM items WHERE id = ?")
+    >(
+        "SELECT kind, file_name, file_path, content_type, size FROM items \
+         WHERE id = ? AND (expires_at IS NULL OR expires_at > ?)",
+    )
     .bind(&id)
+    .bind(util::now())
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;
@@ -389,4 +426,29 @@ fn ensure_can_modify(user: &crate::user::User, item: &Item) -> Result<(), AppErr
 fn item_id_path(state: &SharedState, item: &Item) -> Option<std::path::PathBuf> {
     // Only files have a stored path; the row's file_path mirrors the id.
     (item.kind == "file").then(|| state.cfg.data_dir.join("files").join(&item.id))
+}
+
+/// Delete items past their expiry, along with their files. Reads already hide
+/// expired items; this reclaims the rows and the disk.
+pub async fn cleanup_expired(state: &SharedState) -> Result<(), AppError> {
+    let rows = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT id, file_path FROM items WHERE expires_at IS NOT NULL AND expires_at <= ?",
+    )
+    .bind(util::now())
+    .fetch_all(&state.db)
+    .await?;
+
+    for (id, file_path) in &rows {
+        if let Some(file_path) = file_path {
+            let _ = tokio::fs::remove_file(state.cfg.data_dir.join("files").join(file_path)).await;
+        }
+        sqlx::query("DELETE FROM items WHERE id = ?")
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
+    if !rows.is_empty() {
+        tracing::info!("removed {} expired item(s)", rows.len());
+    }
+    Ok(())
 }

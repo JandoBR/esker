@@ -57,6 +57,20 @@ async fn main() -> anyhow::Result<()> {
         metadata: OnceCell::new(),
     });
 
+    // Expire items in the background; reads already hide them.
+    {
+        let cleanup = state.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(600));
+            loop {
+                ticker.tick().await;
+                if let Err(error) = items::cleanup_expired(&cleanup).await {
+                    tracing::warn!("expiry cleanup failed: {error}");
+                }
+            }
+        });
+    }
+
     let api = Router::new()
         .route("/health", get(health))
         .route("/me", get(auth::me))
