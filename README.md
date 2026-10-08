@@ -1,0 +1,104 @@
+# file-share-board
+
+A small web board of text, links and files, with Pocket ID sign-in and admins
+granted by an OIDC group. Rust/axum server, React SPA, SQLite, files on disk.
+One container; the server serves the built SPA on the same origin.
+
+## Features
+
+- Post **text**, **links** or **files**; view, download, edit (text/link) and
+  delete.
+- Sign-in through any OIDC provider (built for Pocket ID). No local accounts.
+- **Admin by group**: a user in the configured group is an admin and can
+  delete or edit anyone's items.
+- Search, filter by kind, dark mode.
+- Large uploads: streamed to disk, not buffered. No size limit by default.
+
+## How it fits the rest
+
+Configuration comes from environment variables, state lives in one directory
+(`/data`), and it serves plain HTTP on one port. Secrets go through sops. See
+Deploy-kit's `deploy/README.md`, `docs/oidc-pocket-id.md` and
+`docs/docker-and-compose.md`.
+
+## Development
+
+```sh
+nix develop
+
+# Terminal 1: the server. Discovery is lazy, so it starts without Pocket ID.
+export BOARD_PUBLIC_URL=http://localhost:8080
+export OIDC_ISSUER=https://id.example.com
+export OIDC_CLIENT_ID=... OIDC_CLIENT_SECRET=...
+export BOARD_DATA_DIR=./data
+cargo run
+
+# Terminal 2: the SPA, proxying /api to the server on :8080
+cd web && npm install && npm run dev
+```
+
+Open http://localhost:5173. Register `http://localhost:8080/api/auth/callback`
+as a callback URL on the Pocket ID client, and `http://localhost:5173` is enough
+for the Vite proxy to carry the browser's redirect.
+
+The compiler in the dev shell is only needed because `rustls` (`ring`) builds a
+little C; the runtime image is distroless and has none of it.
+
+## Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `BOARD_PUBLIC_URL` | – (required) | Public base URL, no trailing slash. Callback is `{url}/api/auth/callback`. |
+| `OIDC_ISSUER` | – (required) | e.g. `https://id.example.com`. |
+| `OIDC_CLIENT_ID` | – (required) | From the OIDC client. |
+| `OIDC_CLIENT_SECRET` | – (required) | From the OIDC client; keep in sops. |
+| `OIDC_GROUP_CLAIM` | `groups` | Claim holding group names. |
+| `OIDC_ADMIN_GROUP` | – | Group whose members are admins. |
+| `BOARD_ADMIN_SUBS` | – | Comma-separated subject ids that are admins. |
+| `BOARD_MAX_UPLOAD_BYTES` | `0` | Upload cap; `0` = unlimited. |
+| `BOARD_COOKIE_SECURE` | `true` | Set `false` only for plain-HTTP testing off localhost. |
+| `BOARD_DATA_DIR` | `./data` | SQLite and uploaded files. Container uses `/data`. |
+| `BOARD_STATIC_DIR` | `./web/dist` | Built SPA. Container uses `/app/static`. |
+| `BOARD_BIND` | `0.0.0.0:8080` | Listen address. |
+
+## Pocket ID
+
+1. **OIDC Clients → Add.** Callback URLs:
+   `https://board.example.com/api/auth/callback` and, for dev,
+   `http://localhost:8080/api/auth/callback`.
+2. Copy the client id and secret into the env/secrets.
+3. **Allowed user groups**: restrict the client to the groups that may sign in.
+4. Create a group (e.g. `board-admin`). Members are admins. Either set the
+   group's custom claim and point `OIDC_GROUP_CLAIM`/`OIDC_ADMIN_GROUP` at it,
+   or use the built-in `groups` scope. Request the `groups` scope is already
+   done by the app.
+
+## Deploy
+
+```sh
+IMAGE=ghcr.io/jandobr/file-share-board scripts/publish-image   # or the CI workflow
+```
+
+Then copy `compose.yaml` to the server stack, create and chown the data
+directory, put `OIDC_CLIENT_SECRET` (and the rest of `.env.example`) into sops,
+and append `deploy/swag-vhost.conf` to SWAG. The vhost sets
+`client_max_body_size 0` and disables request buffering so modpacks and other
+large files get through.
+
+## API
+
+All routes require a session (the SPA sends the cookie).
+
+| Method | Path | |
+| --- | --- | --- |
+| `GET` | `/api/health` | liveness |
+| `GET` | `/api/me` | current user or 401 |
+| `GET` | `/api/auth/login` | start OIDC |
+| `GET` | `/api/auth/callback` | OIDC redirect target |
+| `POST` | `/api/auth/logout` | clear session |
+| `GET` | `/api/items?q=` | list / search |
+| `POST` | `/api/items` | create (multipart: `kind`, `title`, `description`, `body` \| `url` \| `file`) |
+| `GET` | `/api/items/{id}` | one item |
+| `PATCH` | `/api/items/{id}` | edit text/link (owner or admin) |
+| `DELETE` | `/api/items/{id}` | delete (owner or admin) |
+| `GET` | `/api/items/{id}/file` | download (`?inline=true` to preview) |

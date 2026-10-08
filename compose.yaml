@@ -1,0 +1,29 @@
+# Local or server stack. The server's real stack lives in nixos-config; this
+# is the same shape, with secrets supplied by an env file.
+services:
+  board:
+    image: ghcr.io/jandobr/file-share-board:latest
+    container_name: board
+    # Match the owner of the data directory: mkdir -p /srv/appdata/board &&
+    # chown 99:100 /srv/appdata/board
+    user: "99:100"
+    restart: unless-stopped
+    env_file:
+      - board.env
+    environment:
+      - TZ=America/Bogota
+      - BOARD_PUBLIC_URL=https://board.example.com
+      - OIDC_ISSUER=https://id.example.com
+      - OIDC_GROUP_CLAIM=groups
+      - OIDC_ADMIN_GROUP=board-admin
+    ports:
+      # A host port nothing else uses; the proxy reaches it here.
+      - "8102:8080"
+    volumes:
+      - /srv/appdata/board:/data
+    networks:
+      - internal
+
+networks:
+  internal:
+    external: true
