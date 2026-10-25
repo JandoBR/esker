@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use axum::{
@@ -10,6 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
+use tokio_util::compat::FuturesAsyncWriteCompatExt;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -482,6 +483,130 @@ pub async fn get_item_file(
     serve_by_file_id(&state, &id, &file_id, params.inline.unwrap_or(false)).await
 }
 
+/// Every attachment of an item as one zip: the "download all" endpoint.
+pub async fn get_item_archive(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    require_user(&state, &headers).await?;
+    let item = fetch_item(&state, &id).await?;
+    if item.files.is_empty() {
+        return Err(AppError::NotFound);
+    }
+
+    // The zip is written while the response is read, so a large item never has
+    // to fit in memory or in a temporary file.
+    let (writer, reader) = tokio::io::duplex(64 * 1024);
+    let files_dir = state.cfg.data_dir.join("files");
+    let files = item.files.clone();
+    let title = item.title.clone();
+    tokio::spawn(async move {
+        if let Err(error) = write_zip(writer, files_dir, files).await {
+            tracing::warn!("archive of \"{title}\": {error}");
+        }
+    });
+
+    let mut response = Response::new(Body::from_stream(ReaderStream::new(reader)));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/zip"),
+    );
+    if let Ok(value) = HeaderValue::from_str(&util::content_disposition(
+        "attachment",
+        &archive_name(&item.title),
+    )) {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    Ok(response)
+}
+
+async fn write_zip(
+    writer: tokio::io::DuplexStream,
+    files_dir: PathBuf,
+    files: Vec<FileMeta>,
+) -> anyhow::Result<()> {
+    let mut zip = async_zip::tokio::write::ZipFileWriter::with_tokio(writer);
+    let mut names = HashSet::new();
+    for file in files {
+        let entry = async_zip::ZipEntryBuilder::new(
+            entry_name(&file.file_name, &mut names).into(),
+            compression_for(&file),
+        )
+        .attribute_compatibility(async_zip::AttributeCompatibility::Unix)
+        .unix_permissions(0o644)
+        .last_modification_date(chrono::Utc::now().into());
+        let mut source = tokio::fs::File::open(files_dir.join(&file.id)).await?;
+        let mut sink = zip.write_entry_stream(entry).await?.compat_write();
+        tokio::io::copy(&mut source, &mut sink).await?;
+        sink.into_inner().close().await?;
+    }
+    zip.close().await?;
+    Ok(())
+}
+
+/// Images, video and archives are already compressed, and big files are not
+/// worth the CPU: those are stored, everything else is deflated.
+fn compression_for(file: &FileMeta) -> async_zip::Compression {
+    let compressed = file.content_type.as_deref().is_some_and(|kind| {
+        kind.starts_with("image/")
+            || kind.starts_with("video/")
+            || kind.starts_with("audio/")
+            || kind.contains("zip")
+            || kind.contains("gzip")
+    });
+    let too_big = file.size.is_some_and(|size| size > 16 * 1024 * 1024);
+    if compressed || too_big {
+        async_zip::Compression::Stored
+    } else {
+        async_zip::Compression::Deflate
+    }
+}
+
+/// A flat, unique name inside the archive. Uploads keep their own name; two
+/// files with the same one get a numeric suffix.
+fn entry_name(raw: &str, used: &mut HashSet<String>) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    let base = if base.is_empty() || base == "." || base == ".." {
+        "file"
+    } else {
+        base
+    };
+    if used.insert(base.to_string()) {
+        return base.to_string();
+    }
+    let path = std::path::Path::new(base);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let extension = path.extension().and_then(|s| s.to_str());
+    for n in 2.. {
+        let candidate = match extension {
+            Some(ext) => format!("{stem} ({n}).{ext}"),
+            None => format!("{stem} ({n})"),
+        };
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("there is always another name")
+}
+
+fn archive_name(title: &str) -> String {
+    let stem: String = title
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let stem = stem.trim();
+    let stem = if stem.is_empty() { "files" } else { stem };
+    format!("{stem}.zip")
+}
+
 /// The old single-file URL, kept working: serves the item's first attachment.
 pub async fn get_item_file_legacy(
     State(state): State<SharedState>,
@@ -597,4 +722,28 @@ pub async fn cleanup_expired(state: &SharedState) -> Result<(), AppError> {
         tracing::info!("removed {} expired item(s)", expired.len());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{archive_name, entry_name};
+    use std::collections::HashSet;
+
+    #[test]
+    fn entry_names_are_flat_and_unique() {
+        let mut used = HashSet::new();
+        assert_eq!(entry_name("../../etc/passwd", &mut used), "passwd");
+        assert_eq!(entry_name("shot.png", &mut used), "shot.png");
+        assert_eq!(entry_name("shot.png", &mut used), "shot (2).png");
+        assert_eq!(entry_name("shot.png", &mut used), "shot (3).png");
+        assert_eq!(entry_name("", &mut used), "file");
+        assert_eq!(entry_name("..", &mut used), "file (2)");
+    }
+
+    #[test]
+    fn archive_names_are_safe() {
+        assert_eq!(archive_name("Screenshots"), "Screenshots.zip");
+        assert_eq!(archive_name(" a/b:c "), "a-b-c.zip");
+        assert_eq!(archive_name("   "), "files.zip");
+    }
 }

@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import type { Item } from "../types";
-import { formatBytes, formatDate, formatExpiry } from "../lib/utils";
+import { download, formatBytes, formatDate, formatExpiry } from "../lib/utils";
 import { Button, Input, Modal, ModalHeader, Textarea } from "./ui";
 
 const ttlOptions = [
@@ -268,6 +268,21 @@ export function ItemView({
                 {item.files.length === 0 && (
                   <p className="text-sm text-zinc-400">No files.</p>
                 )}
+                {item.files.length > 1 && (
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium tracking-wide text-zinc-400 uppercase">
+                      {item.files.length} files
+                    </p>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => download(api.archiveUrl(item.id))}
+                    >
+                      <Download className="h-4 w-4" />
+                      Download all
+                    </Button>
+                  </div>
+                )}
                 {item.files.map((file) => (
                   <div
                     key={file.id}
@@ -285,9 +300,7 @@ export function ItemView({
                     </div>
                     <Button
                       size="sm"
-                      onClick={() => {
-                        window.location.href = api.fileUrl(item.id, file.id);
-                      }}
+                      onClick={() => download(api.fileUrl(item.id, file.id))}
                     >
                       <Download className="h-4 w-4" />
                       Download

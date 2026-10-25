@@ -88,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
                 .delete(items::delete_item),
         )
         .route("/items/{id}/file", get(items::get_item_file_legacy))
+        .route("/items/{id}/archive", get(items::get_item_archive))
         .route("/items/{id}/files", post(items::add_item_files))
         .route(
             "/items/{id}/files/{file_id}",

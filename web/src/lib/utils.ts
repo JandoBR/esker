@@ -42,3 +42,18 @@ export function formatExpiry(iso: string | null): string | null {
   if (hours < 48) return `expires in ${hours} h`;
   return `expires in ${Math.round(hours / 24)} d`;
 }
+
+/**
+ * Save a URL without navigating the app away. Assigning to `location.href`
+ * works on a desktop, but in an installed web app it can replace the whole
+ * window with the file and leave the app dead for the next click.
+ */
+export function download(url: string) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.rel = "noopener";
+  link.style.display = "none";
+  document.body.append(link);
+  link.click();
+  link.remove();
+}

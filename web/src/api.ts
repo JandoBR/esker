@@ -62,6 +62,17 @@ export const api = {
   fileUrl: (id: string, fileId: string, inline = false) =>
     `/api/items/${id}/files/${fileId}${inline ? "?inline=true" : ""}`,
 
+  /** Every file of an item, zipped. */
+  archiveUrl: (id: string) => `/api/items/${id}/archive`,
+
+  /** What one download action should fetch: the file itself, or all of them. */
+  downloadUrl: (item: Item) => {
+    if (item.files.length === 0) return null;
+    return item.files.length === 1
+      ? `/api/items/${item.id}/files/${item.files[0].id}`
+      : `/api/items/${item.id}/archive`;
+  },
+
   login: () => {
     window.location.href = "/api/auth/login";
   },

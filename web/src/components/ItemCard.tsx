@@ -8,7 +8,8 @@ import {
   Trash2,
 } from "lucide-react";
 import type { Item } from "../types";
-import { formatBytes, formatDate, formatExpiry } from "../lib/utils";
+import { download, formatBytes, formatDate, formatExpiry } from "../lib/utils";
+import { api } from "../api";
 import { Badge, Button } from "./ui";
 
 const kindStyles: Record<
@@ -53,7 +54,10 @@ export function ItemCard({
     item.files.length === 1 ? item.files[0].file_name : `${item.files.length} files`;
 
   return (
-    <div className="group flex flex-col rounded-xl border border-zinc-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900">
+    <div
+      onClick={onOpen}
+      className="group flex cursor-pointer flex-col rounded-xl border border-zinc-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
+    >
       <div className="flex items-start gap-3">
         <div
           className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${style.className}`}
@@ -62,7 +66,10 @@ export function ItemCard({
         </div>
         <div className="min-w-0 flex-1">
           <button
-            onClick={onOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpen();
+            }}
             className="block w-full truncate text-left text-sm font-semibold text-zinc-900 hover:text-indigo-600 dark:text-zinc-100 dark:hover:text-indigo-400"
             title={item.title}
           >
@@ -96,27 +103,48 @@ export function ItemCard({
       </div>
 
       <div className="mt-3 flex items-center gap-1 border-t border-zinc-100 pt-3 dark:border-zinc-800">
-        <Button variant="ghost" size="sm" onClick={onOpen}>
-          {item.kind === "link" ? (
-            <>
-              <ExternalLink className="h-3.5 w-3.5" /> Open
-            </>
-          ) : item.kind === "file" ? (
-            <>
-              <Download className="h-3.5 w-3.5" /> Download
-            </>
-          ) : (
-            <>
-              <FileText className="h-3.5 w-3.5" /> View
-            </>
-          )}
-        </Button>
+        {item.kind === "file" ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={item.files.length === 0}
+            onClick={(event) => {
+              event.stopPropagation();
+              const url = api.downloadUrl(item);
+              if (url) download(url);
+            }}
+          >
+            <Download className="h-3.5 w-3.5" /> Download
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpen();
+            }}
+          >
+            {item.kind === "link" ? (
+              <>
+                <ExternalLink className="h-3.5 w-3.5" /> Open
+              </>
+            ) : (
+              <>
+                <FileText className="h-3.5 w-3.5" /> View
+              </>
+            )}
+          </Button>
+        )}
         {canDelete && (
           <Button
             variant="ghost"
             size="sm"
             className="ml-auto text-zinc-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10"
-            onClick={onDelete}
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete();
+            }}
             aria-label="Delete"
             title="Delete"
           >

@@ -107,4 +107,8 @@ All routes require a session (the SPA sends the cookie).
 | `GET` | `/api/items/{id}` | one item |
 | `PATCH` | `/api/items/{id}` | edit text/link (owner or admin) |
 | `DELETE` | `/api/items/{id}` | delete (owner or admin) |
-| `GET` | `/api/items/{id}/file` | download (`?inline=true` to preview) |
+| `GET` | `/api/items/{id}/file` | download the first file (`?inline=true` to preview) |
+| `POST` | `/api/items/{id}/files` | add attachments (multipart `file`) |
+| `GET` | `/api/items/{id}/files/{file_id}` | download one file (`?inline=true` to preview) |
+| `DELETE` | `/api/items/{id}/files/{file_id}` | remove one file |
+| `GET` | `/api/items/{id}/archive` | every file of the item as one zip |
