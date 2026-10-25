@@ -10,13 +10,16 @@ use std::sync::Arc;
 
 use axum::{
     extract::DefaultBodyLimit,
+    http::{header, HeaderValue},
     routing::{get, post},
     Router,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tokio::sync::OnceCell;
+use tower::Layer;
 use tower_http::{
     services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
 use tracing_subscriber::EnvFilter;
@@ -100,8 +103,17 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let index = cfg.static_dir.join("index.html");
+    // A service worker that is served from the HTTP cache keeps handing out the
+    // old shell, so it has to be revalidated on every load.
+    let service_worker = SetResponseHeaderLayer::overriding(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    )
+    .layer(ServeFile::new(cfg.static_dir.join("sw.js")));
+
     let app = Router::new()
         .nest("/api", api)
+        .route_service("/sw.js", service_worker)
         .fallback_service(ServeDir::new(&cfg.static_dir).fallback(ServeFile::new(index)))
         .layer(TraceLayer::new_for_http())
         .layer(body_limit);
