@@ -1,11 +1,11 @@
-# Local or server stack. This mirrors the stack in nixos-config; on the server
-# the image is built and pushed by the .forgejo workflow.
+# Example stack for a server. The image is built and pushed by the workflow in
+# .github/workflows/; change the image name if you build it yourself.
 services:
-  enderboard:
-    image: ghcr.io/jandobr/enderboard:latest
-    container_name: enderboard
-    # Match the owner of the data directory: mkdir -p /srv/appdata/enderboard &&
-    # chown 99:100 /srv/appdata/enderboard
+  esker:
+    image: ghcr.io/jandobr/esker:latest
+    container_name: esker
+    # Match the owner of the data directory: mkdir -p /srv/appdata/esker &&
+    # chown 99:100 /srv/appdata/esker
     user: "99:100"
     restart: unless-stopped
     env_file:
@@ -20,7 +20,7 @@ services:
       # The proxy reaches it here; board.example.com points at this port.
       - "8091:8080"
     volumes:
-      - /srv/appdata/enderboard:/data
+      - /srv/appdata/esker:/data
     networks:
       - internal
 

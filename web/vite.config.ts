@@ -11,8 +11,8 @@ export default defineConfig({
       registerType: "autoUpdate",
       manifest: {
         id: "/",
-        name: "Enderboard",
-        short_name: "Enderboard",
+        name: "Esker",
+        short_name: "Esker",
         description: "A small web board of text, links and files.",
         start_url: "/",
         scope: "/",

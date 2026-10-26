@@ -13,7 +13,7 @@ export function Header({ user, onNew }: { user: User; onNew: () => void }) {
             E
           </div>
           <span className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-            Enderboard
+            Esker
           </span>
         </div>
 

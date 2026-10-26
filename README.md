@@ -1,4 +1,4 @@
-# Enderboard
+# Esker
 
 A small web board of text, links and files, with Pocket ID sign-in and admins
 granted by an OIDC group. Rust/axum server, React SPA, SQLite, files on disk.
@@ -19,9 +19,7 @@ One container; the server serves the built SPA on the same origin.
 ## How it fits the rest
 
 Configuration comes from environment variables, state lives in one directory
-(`/data`), and it serves plain HTTP on one port. Secrets go through sops. See
-Deploy-kit's `deploy/README.md`, `docs/oidc-pocket-id.md` and
-`docs/docker-and-compose.md`.
+(`/data`), and it serves plain HTTP on one port behind whatever terminates TLS.
 
 ## Development
 
@@ -57,7 +55,7 @@ offline behaviour are worth checking against the built SPA (the container, or
 | `BOARD_PUBLIC_URL` | – (required) | Public base URL, no trailing slash. Callback is `{url}/api/auth/callback`. |
 | `OIDC_ISSUER` | – (required) | e.g. `https://id.example.com`. |
 | `OIDC_CLIENT_ID` | – (required) | From the OIDC client. |
-| `OIDC_CLIENT_SECRET` | – (required) | From the OIDC client; keep in sops. |
+| `OIDC_CLIENT_SECRET` | – (required) | From the OIDC client; never commit it. |
 | `OIDC_GROUP_CLAIM` | `groups` | Claim holding group names. |
 | `OIDC_ADMIN_GROUP` | – | Group whose members are admins. |
 | `BOARD_ADMIN_SUBS` | – | Comma-separated subject ids that are admins. |
@@ -82,12 +80,12 @@ offline behaviour are worth checking against the built SPA (the container, or
 ## Deploy
 
 ```sh
-IMAGE=ghcr.io/jandobr/enderboard scripts/publish-image   # or the CI workflow
+IMAGE=ghcr.io/jandobr/esker scripts/publish-image   # CI does this on push
 ```
 
 Then copy `compose.yaml` to the server stack, create and chown the data
-directory, put `OIDC_CLIENT_SECRET` (and the rest of `.env.example`) into sops,
-and append `deploy/swag-vhost.conf` to SWAG. The vhost sets
+directory, put `OIDC_CLIENT_SECRET` (and the rest of `.env.example`) into your
+secret store, and append `deploy/swag-vhost.conf` to SWAG. The vhost sets
 `client_max_body_size 0` and disables request buffering so modpacks and other
 large files get through.
 

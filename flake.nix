@@ -1,5 +1,5 @@
 {
-  description = "Enderboard: a small board of text, links and files";
+  description = "Esker: a small board of text, links and files";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
