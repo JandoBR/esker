@@ -4,6 +4,14 @@ A small web board of text, links and files, with Pocket ID sign-in and admins
 granted by an OIDC group. Rust/axum server, React SPA, SQLite, files on disk.
 One container; the server serves the built SPA on the same origin.
 
+<p align="center">
+  <img src="docs/screenshots/board.jpg" width="720" alt="The board: text, link and file items with search and kind filters">
+</p>
+<p align="center">
+  <img src="docs/screenshots/file.jpg" width="420" alt="A file item: download, edit and delete">
+  <img src="docs/screenshots/add.jpg" width="420" alt="Adding an item as text, link or file">
+</p>
+
 ## Features
 
 - Post **text**, **links** or **files**; view, download, edit (text/link) and
